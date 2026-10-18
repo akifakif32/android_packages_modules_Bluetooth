@@ -50,6 +50,7 @@
 #include "btif/include/btif_a2dp.h"
 #include "btif/include/btif_a2dp_sink.h"
 #include "btif/include/btif_a2dp_source.h"
+#include "btif/include/btif_a2dp_sharing.h"
 #include "btif/include/btif_av_co.h"
 #include "btif/include/btif_common.h"
 #include "btif/include/btif_profile_queue.h"
@@ -2346,22 +2347,31 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event, void* p_data)
       // If A2DP is Sink and call is active, then disconnect the AVDTP
       // channel.
       bool should_suspend = false;
+      bool sharing_secondary = false;
       if (peer_.IsSink()) {
         if (!peer_.CheckFlags(BtifAvPeer::kFlagPendingStart | BtifAvPeer::kFlagRemoteSuspend)) {
           log::warn("Peer {} : trigger Suspend as remote initiated", peer_.PeerAddress());
           should_suspend = true;
-        } else if (!peer_.IsActivePeer()) {
+        } else if (!peer_.IsActivePeer() && !btif_a2dp_sharing_is_sharing_peer(peer_.PeerAddress())) {
           log::warn("Peer {} : trigger Suspend as non-active", peer_.PeerAddress());
           should_suspend = true;
         }
 
         // Invoke the started handler only when initiator.
         log::info("Peer should suspend: {}", should_suspend);
+
+        if (!should_suspend && !peer_.IsActivePeer() &&
+            btif_a2dp_sharing_is_sharing_peer(peer_.PeerAddress())) {
+          // Secondary sharing peer joins the active stream without double-acking to the audio HAL
+          log::info("Peer {} : secondary sharing peer stream started", peer_.PeerAddress());
+          sharing_secondary = true;
+          peer_.ClearFlags(BtifAvPeer::kFlagPendingStart);
+        }
       }
 
       // Remain in Open state if status failed
       if (p_av->start.status != BTA_AV_SUCCESS) {
-        if (peer_.IsSink() && !should_suspend &&
+        if (peer_.IsSink() && !should_suspend && !sharing_secondary &&
             btif_a2dp_on_started(peer_.PeerAddress(), &p_av->start, A2dpType::kSource)) {
           peer_.ClearFlags(BtifAvPeer::kFlagPendingStart);
         }
@@ -2388,7 +2398,7 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event, void* p_data)
 
       peer_.StateMachine().TransitionTo(BtifAvStateMachine::kStateStarted);
 
-      if (peer_.IsSink() && !should_suspend) {
+      if (peer_.IsSink() && !should_suspend && !sharing_secondary) {
         btif_a2dp_on_started(peer_.PeerAddress(), &p_av->start, A2dpType::kSource);
       }
       break;
@@ -2434,6 +2444,7 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event, void* p_data)
       btif_report_connection_state(peer_.PeerAddress(), BTAV_CONNECTION_STATE_DISCONNECTED,
                                    BtifStatus(), BTA_AV_SUCCESS,
                                    peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
+      btif_a2dp_sharing_on_peer_disconnected(peer_.PeerAddress());
       peer_.StateMachine().TransitionTo(BtifAvStateMachine::kStateIdle);
       break;
 
@@ -2602,8 +2613,13 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event, void* p_data
                 peer_.FlagsToString());
       // We were started remotely, just ACK back the local request
       if (peer_.IsSink()) {
-        btif_a2dp_on_started(peer_.PeerAddress(), nullptr,
-                             peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
+        if (peer_.IsActivePeer()) {
+          btif_a2dp_on_started(peer_.PeerAddress(), nullptr,
+                               peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
+        } else if (btif_a2dp_sharing_is_sharing_peer(peer_.PeerAddress())) {
+          log::info("Peer {} : secondary sharing peer in StateStarted, skipping HAL ack",
+                    peer_.PeerAddress());
+        }
       }
       break;
 
@@ -2626,9 +2642,8 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event, void* p_data
       // always overrides.
       peer_.ClearFlags(BtifAvPeer::kFlagRemoteSuspend);
 
-      if (peer_.IsSink() &&
-          (peer_.IsActivePeer() || !btif_av_stream_started_ready(A2dpType::kSource))) {
-        // Immediately stop transmission of frames while suspend is pending
+      if (peer_.IsSink() && peer_.IsActivePeer()) {
+        // Immediately stop transmission of frames while suspend is pending for active peer
         if (event == BTIF_AV_STOP_STREAM_REQ_EVT) {
           btif_a2dp_on_stopped(nullptr, peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
         } else {
@@ -2754,6 +2769,8 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event, void* p_data
                                    BtifStatus(), BTA_AV_SUCCESS,
                                    peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
 
+      btif_a2dp_sharing_on_peer_disconnected(peer_.PeerAddress());
+
       peer_.StateMachine().TransitionTo(BtifAvStateMachine::kStateIdle);
       break;
 
@@ -2871,6 +2888,8 @@ bool BtifAvStateMachine::StateClosing::ProcessEvent(uint32_t event, void* p_data
       btif_report_connection_state(peer_.PeerAddress(), BTAV_CONNECTION_STATE_DISCONNECTED,
                                    BtifStatus(), BTA_AV_SUCCESS,
                                    peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
+
+      btif_a2dp_sharing_on_peer_disconnected(peer_.PeerAddress());
 
       peer_.StateMachine().TransitionTo(BtifAvStateMachine::kStateIdle);
       break;
@@ -3806,6 +3825,11 @@ void btif_av_stream_start(const A2dpType /*local_a2dp_type*/) {
   log::info("");
 
   btif_av_source_dispatch_sm_event(btif_av_source_active_peer(), BTIF_AV_START_STREAM_REQ_EVT);
+  RawAddress sharing_peer = btif_a2dp_sharing_get_sharing_peer();
+  if (!sharing_peer.IsEmpty()) {
+    log::info("also starting stream for sharing peer {}", sharing_peer);
+    btif_av_source_dispatch_sm_event(sharing_peer, BTIF_AV_START_STREAM_REQ_EVT);
+  }
 }
 
 void btif_av_stream_start_with_latency(bool use_latency_mode) {
@@ -3819,6 +3843,14 @@ void btif_av_stream_start_with_latency(bool use_latency_mode) {
   do_in_main_thread(base::BindOnce(&btif_av_handle_event,
                                    AVDT_TSEP_SNK,  // peer_sep
                                    btif_av_source_active_peer(), kBtaHandleUnknown, btif_av_event));
+
+  RawAddress sharing_peer = btif_a2dp_sharing_get_sharing_peer();
+  if (!sharing_peer.IsEmpty()) {
+    log::info("also starting stream with latency for sharing peer {}", sharing_peer);
+    do_in_main_thread(base::BindOnce(&btif_av_handle_event,
+                                     AVDT_TSEP_SNK,
+                                     sharing_peer, kBtaHandleUnknown, btif_av_event));
+  }
 }
 
 void btif_av_stream_stop(const RawAddress& peer_address) {
@@ -3831,6 +3863,7 @@ void btif_av_stream_stop(const RawAddress& peer_address) {
 
   // The active peer might have changed and we might be in the process
   // of reconfiguring the stream. We need to stop the appropriate peer(s).
+  // DispatchSuspendStreamEvent already iterates all peers in kStateStarted.
   btif_av_source.DispatchSuspendStreamEvent(BTIF_AV_STOP_STREAM_REQ_EVT);
 }
 
@@ -3839,6 +3872,7 @@ void btif_av_stream_suspend(void) {
 
   // The active peer might have changed and we might be in the process
   // of reconfiguring the stream. We need to suspend the appropriate peer(s).
+  // DispatchSuspendStreamEvent already iterates all peers in kStateStarted.
   btif_av_source.DispatchSuspendStreamEvent(BTIF_AV_SUSPEND_STREAM_REQ_EVT);
 }
 
@@ -3903,6 +3937,18 @@ static void btif_av_source_dispatch_sm_event(const RawAddress& peer_address,
   do_in_main_thread(base::BindOnce(&btif_av_handle_event,
                                    AVDT_TSEP_SNK,  // peer_sep
                                    peer_address, kBtaHandleUnknown, btif_av_event));
+}
+
+void btif_av_source_start_sharing_stream(const RawAddress& peer_address) {
+  if (!peer_address.IsEmpty()) {
+    btif_av_source_dispatch_sm_event(peer_address, BTIF_AV_START_STREAM_REQ_EVT);
+  }
+}
+
+void btif_av_source_stop_sharing_stream(const RawAddress& peer_address) {
+  if (!peer_address.IsEmpty()) {
+    btif_av_source_dispatch_sm_event(peer_address, BTIF_AV_SUSPEND_STREAM_REQ_EVT);
+  }
 }
 
 static void btif_av_sink_dispatch_sm_event(const RawAddress& peer_address,
@@ -4183,9 +4229,17 @@ uint16_t btif_av_get_audio_delay(const A2dpType local_a2dp_type) {
   return 0;
 }
 
-bool btif_av_is_a2dp_offload_enabled() { return btif_av_source.A2dpOffloadEnabled(); }
+bool btif_av_is_a2dp_offload_enabled() {
+  if (btif_a2dp_sharing_is_active()) {
+    return false;
+  }
+  return btif_av_source.A2dpOffloadEnabled();
+}
 
 bool btif_av_is_a2dp_offload_running() {
+  if (btif_a2dp_sharing_is_active()) {
+    return false;
+  }
   if (!btif_av_is_a2dp_offload_enabled()) {
     return false;
   }
