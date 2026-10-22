@@ -1344,6 +1344,11 @@ public class AdapterService extends Service {
                 setAllProfileServiceStates(supportedProfiles, State.ON);
             }
         }
+        try {
+            startService(new Intent(this, com.oplus.bluetooth.feature.a2dpshare.OplusA2dpSharingService.class));
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to start OplusA2dpSharingService", t);
+        }
     }
 
     private void setAllProfileServiceStates(int[] profileIds, int state) {
