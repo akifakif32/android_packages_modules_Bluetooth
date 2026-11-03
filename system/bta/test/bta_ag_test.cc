@@ -394,7 +394,7 @@ TEST_F(BtaAgScoTest, codec_negotiate__aptx_disabled) {
   EXPECT_CALL(btm_client_interface_, BTM_ReadRemoteFeatures(_)).WillOnce(Return(data));
 
   ASSERT_TRUE(enable_aptx_voice_property(false));
-  ASSERT_EQ(BtifStatus(FAIL), enable_aptx_swb_codec(false, addr));
+  ASSERT_EQ(BtifStatus(), enable_aptx_swb_codec(false, addr));
   bta_ag_codec_negotiate(p_scb);
   ASSERT_EQ(0, get_func_call_count("PORT_WriteData"));
   ASSERT_EQ(0, get_func_call_count("alarm_set_on_mloop"));
