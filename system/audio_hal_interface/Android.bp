@@ -25,6 +25,8 @@ cc_library_static {
         "android.hardware.bluetooth.audio@2.1",
         "libhidlbase",
         "libutils",
+        "vendor.qti.hardware.bluetooth_audio@2.0",
+        "vendor.qti.hardware.bluetooth_audio@2.1",
     ],
     static_libs: [
         "bluetooth_flags_c_lib",
@@ -67,6 +69,9 @@ cc_library_static {
                 "hidl/le_audio_software_hidl.cc",
                 "le_audio_peripheral.cc",
                 "le_audio_software.cc",
+                "qti/a2dp_encoding_qti.cc",
+                "qti/client_interface_qti.cc",
+                "qti/codec_status_qti.cc",
             ],
         },
         host: {
