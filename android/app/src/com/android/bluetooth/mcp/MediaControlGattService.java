@@ -1732,10 +1732,11 @@ public class MediaControlGattService implements MediaControlGattServiceInterface
     private void notifyCharacteristic(
             @NonNull BluetoothDevice device, @NonNull BluetoothGattCharacteristic characteristic) {
         if (mBluetoothGattServer == null || !mBluetoothGattServer.isDeviceConnected(device)) return;
-        if (getDeviceAuthorization(device) != BluetoothDevice.ACCESS_ALLOWED) return;
 
+        // A device that never wrote a CCC isn't an MCS client: skip it before the authorization
         Map<UUID, Short> charCccMap = mCccDescriptorValues.get(device.getAddress());
         if (charCccMap == null) return;
+        if (getDeviceAuthorization(device) != BluetoothDevice.ACCESS_ALLOWED) return;
 
         byte[] ccc = getCccBytes(device, characteristic.getUuid());
         Log.d(
