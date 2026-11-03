@@ -46,6 +46,11 @@ class A2dpCodecConfig {
     private final Context mContext;
     private final A2dpNativeInterface mA2dpNativeInterface;
 
+    // Native BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE; there is no public codec type constant
+    // Must match BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE in hardware/bt_av.h
+    // (7 is LHDCV5 in this tree)
+    private static final int SOURCE_CODEC_TYPE_APTX_ADAPTIVE = 8;
+
     private final BluetoothCodecConfig[] mCodecConfigPriorities;
     private @CodecPriority int mA2dpSourceCodecPrioritySbc =
             BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
@@ -61,6 +66,8 @@ class A2dpCodecConfig {
             BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
     private @CodecPriority int mA2dpSourceCodecPriorityLhdcv5 =
             BluetoothCodecConfig.CODEC_PRIORITY_DISABLED;
+    private @CodecPriority int mA2dpSourceCodecPriorityAptxAdaptive =
+            BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
 
     private BluetoothCodecConfig[] mCodecConfigOffloading = new BluetoothCodecConfig[0];
 
@@ -319,8 +326,18 @@ class A2dpCodecConfig {
             mA2dpSourceCodecPriorityLhdcv5 = value;
         }
 
+        try {
+            value = resources.getInteger(R.integer.a2dp_source_codec_priority_aptx_adaptive);
+        } catch (NotFoundException e) {
+            value = BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
+        }
+        if ((value >= BluetoothCodecConfig.CODEC_PRIORITY_DISABLED)
+                && (value < BluetoothCodecConfig.CODEC_PRIORITY_HIGHEST)) {
+            mA2dpSourceCodecPriorityAptxAdaptive = value;
+        }
+
         BluetoothCodecConfig codecConfig;
-        BluetoothCodecConfig[] codecConfigArray = new BluetoothCodecConfig[7];
+        BluetoothCodecConfig[] codecConfigArray = new BluetoothCodecConfig[8];
         codecConfig =
                 new BluetoothCodecConfig.Builder()
                         .setCodecType(BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC)
@@ -365,6 +382,12 @@ class A2dpCodecConfig {
                         .setCodecPriority(mA2dpSourceCodecPriorityLhdcv5)
                         .build();
         codecConfigArray[6] = codecConfig;
+        codecConfig =
+                new BluetoothCodecConfig.Builder()
+                        .setCodecType(SOURCE_CODEC_TYPE_APTX_ADAPTIVE)
+                        .setCodecPriority(mA2dpSourceCodecPriorityAptxAdaptive)
+                        .build();
+        codecConfigArray[7] = codecConfig;
 
         return codecConfigArray;
     }
