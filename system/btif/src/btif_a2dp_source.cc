@@ -507,27 +507,27 @@ static bool get_rate_control_enabled(A2dpCodecConfig* a2dp_codec_config) {
           codec_config.codec_specific_1 % 10 == A2DP_LDAC_QUALITY_ABR);
 }
 
-static void btif_a2dp_source_start_session_delayed(const RawAddress& peer_address,
-                                                   std::promise<void> peer_ready_promise) {
-  log::info("peer_address={} state={}", peer_address, btif_a2dp_source_cb.StateStr());
-
+// Set up the A2DP Source codec, and prepare the encoder.
+// The peer address is |peer_address|.
+// Returns false if the codec cannot be set up.
+static bool btif_a2dp_source_setup_codec(const RawAddress& peer_address) {
   tA2DP_ENCODER_INIT_PEER_PARAMS peer_params;
   bta_av_co_get_peer_params(peer_address, &peer_params);
   if (!bta_av_co_set_active_source_peer(peer_address)) {
     log::error("Cannot stream audio: cannot set active peer to {}", peer_address);
-    return;
+    return false;
   }
 
   const tA2DP_ENCODER_INTERFACE* encoder_interface = bta_av_co_get_encoder_interface(peer_address);
   if (encoder_interface == nullptr) {
     log::error("Cannot stream audio: no source encoder interface");
-    return;
+    return false;
   }
 
   A2dpCodecConfig* a2dp_codec_config = bta_av_get_a2dp_current_codec();
   if (a2dp_codec_config == nullptr) {
     log::error("Cannot stream audio: current codec is not set");
-    return;
+    return false;
   }
 
   encoder_interface->encoder_init(&peer_params, a2dp_codec_config, btif_a2dp_source_read_callback,
@@ -555,6 +555,17 @@ static void btif_a2dp_source_start_session_delayed(const RawAddress& peer_addres
     log::debug("{}", config.ToString());
 
     bluetooth::audio::a2dp::setup_codec(config);
+  }
+
+  return true;
+}
+
+static void btif_a2dp_source_start_session_delayed(const RawAddress& peer_address,
+                                                   std::promise<void> peer_ready_promise) {
+  log::info("peer_address={} state={}", peer_address, btif_a2dp_source_cb.StateStr());
+
+  if (!btif_a2dp_source_setup_codec(peer_address)) {
+    return;
   }
 
   if (btif_a2dp_source_cb.State() != BtifA2dpSource::kStateRunning) {
@@ -596,6 +607,19 @@ bool btif_a2dp_source_restart_session(const RawAddress& old_peer_address,
   // If audio was streaming before, DON'T start audio streaming, but leave the
   // control to the audio HAL.
   return true;
+}
+
+void btif_a2dp_source_reinit_encoder(const RawAddress& peer_address,
+                                     std::promise<void> peer_ready_promise) {
+  log::info("peer_address={} state={}", peer_address, btif_a2dp_source_cb.StateStr());
+
+  // Runs on the thread of the encoding timer, so no encode is in flight.
+  btif_a2dp_source_thread.DoInThread(base::BindOnce(
+          [](const RawAddress& peer_address, std::promise<void> peer_ready_promise) {
+            btif_a2dp_source_setup_codec(peer_address);
+            peer_ready_promise.set_value();
+          },
+          peer_address, std::move(peer_ready_promise)));
 }
 
 bool btif_a2dp_source_end_session(const RawAddress& peer_address) {
